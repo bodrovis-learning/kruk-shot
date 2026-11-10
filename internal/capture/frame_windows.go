@@ -66,11 +66,11 @@ func (s *Session) Capture() (*image.RGBA, error) {
 
 	for attempt := 0; attempt < attempts; attempt++ {
 		var info frameInfo
-		var resource uintptr
+		var resource unsafe.Pointer
 
 		hr, _, _ := syscall.SyscallN(
 			comMethod(s.duplication, 8), // AcquireNextFrame
-			s.duplication,
+			uintptr(s.duplication),
 			timeoutMS,
 			uintptr(unsafe.Pointer(&info)),
 			uintptr(unsafe.Pointer(&resource)),
@@ -100,7 +100,7 @@ func (s *Session) Capture() (*image.RGBA, error) {
 
 		// A zero timestamp means that only the mouse pointer changed.
 		if info.LastPresentTime != 0 {
-			if resource == 0 {
+			if resource == nil {
 				captureErr = errors.New("desktop frame has no resource")
 			} else {
 				img, captureErr = s.readFrame(resource)
@@ -112,7 +112,7 @@ func (s *Session) Capture() (*image.RGBA, error) {
 		// Every successful AcquireNextFrame needs a ReleaseFrame.
 		hr, _, _ = syscall.SyscallN(
 			comMethod(s.duplication, 14), // ReleaseFrame
-			s.duplication,
+			uintptr(s.duplication),
 		)
 
 		if uint32(hr) == dxgiErrorAccessLost {
@@ -147,12 +147,12 @@ func (s *Session) Capture() (*image.RGBA, error) {
 }
 
 // readFrame converts an acquired DXGI resource into an RGBA image.
-func (s *Session) readFrame(resource uintptr) (*image.RGBA, error) {
-	var texture uintptr
+func (s *Session) readFrame(resource unsafe.Pointer) (*image.RGBA, error) {
+	var texture unsafe.Pointer
 
 	hr, _, _ := syscall.SyscallN(
 		comMethod(resource, 0), // QueryInterface
-		resource,
+		uintptr(resource),
 		uintptr(unsafe.Pointer(&iidID3D11Texture2D)),
 		uintptr(unsafe.Pointer(&texture)),
 	)
@@ -162,11 +162,15 @@ func (s *Session) readFrame(resource uintptr) (*image.RGBA, error) {
 		return nil, err
 	}
 
+	if texture == nil {
+		return nil, errors.New("QueryInterface returned a null texture")
+	}
+
 	var desc texture2DDesc
 
-	syscall.SyscallN(
+	_, _, _ = syscall.SyscallN(
 		comMethod(texture, 10), // GetDesc
-		texture,
+		uintptr(texture),
 		uintptr(unsafe.Pointer(&desc)),
 	)
 

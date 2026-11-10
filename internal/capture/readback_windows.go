@@ -15,7 +15,7 @@ const (
 )
 
 type mappedSubresource struct {
-	Data       uintptr
+	Data       unsafe.Pointer
 	RowPitch   uint32
 	DepthPitch uint32
 }
@@ -35,26 +35,27 @@ type texture2DDesc struct {
 }
 
 func readbackTexture(
-	device uintptr,
-	context uintptr,
-	source uintptr,
+	device unsafe.Pointer,
+	context unsafe.Pointer,
+	source unsafe.Pointer,
 	desc texture2DDesc,
 ) (*image.RGBA, error) {
 	if desc.Format != dxgiFormatBGRA8 {
 		return nil, fmt.Errorf("unsupported texture format: %d", desc.Format)
 	}
 
+	// Create a CPU-readable staging texture.
 	stagingDesc := desc
 	stagingDesc.Usage = d3d11UsageStaging
 	stagingDesc.BindFlags = 0
 	stagingDesc.CPUAccessFlags = d3d11CPUAccessRead
 	stagingDesc.MiscFlags = 0
 
-	var staging uintptr
+	var staging unsafe.Pointer
 
 	hr, _, _ := syscall.SyscallN(
-		comMethod(device, 5),
-		device,
+		comMethod(device, 5), // CreateTexture2D
+		uintptr(device),
 		uintptr(unsafe.Pointer(&stagingDesc)),
 		0,
 		uintptr(unsafe.Pointer(&staging)),
@@ -65,20 +66,24 @@ func readbackTexture(
 		return nil, err
 	}
 
-	// Copy the GPU texture into CPU-readable memory.
-	syscall.SyscallN(
-		comMethod(context, 47),
-		context,
-		staging,
-		source,
+	if staging == nil {
+		return nil, fmt.Errorf("CreateTexture2D returned a null texture")
+	}
+
+	// Copy the GPU texture into the staging texture.
+	_, _, _ = syscall.SyscallN(
+		comMethod(context, 47), // CopyResource
+		uintptr(context),
+		uintptr(staging),
+		uintptr(source),
 	)
 
 	var mapped mappedSubresource
 
 	hr, _, _ = syscall.SyscallN(
-		comMethod(context, 14),
-		context,
-		staging,
+		comMethod(context, 14), // Map
+		uintptr(context),
+		uintptr(staging),
 		0,
 		d3d11MapRead,
 		0,
@@ -89,15 +94,18 @@ func readbackTexture(
 		return nil, err
 	}
 
-	defer syscall.SyscallN(
-		comMethod(context, 15),
-		context,
-		staging,
-		0,
-	)
+	defer func() {
+		// ID3D11DeviceContext::Unmap returns void.
+		_, _, _ = syscall.SyscallN(
+			comMethod(context, 15),
+			uintptr(context),
+			uintptr(staging),
+			0,
+		)
+	}()
 
-	if mapped.Data == 0 {
-		return nil, fmt.Errorf("Map returned a null data pointer")
+	if mapped.Data == nil {
+		return nil, fmt.Errorf("map returned a null data pointer")
 	}
 
 	width := int(desc.Width)
@@ -110,8 +118,9 @@ func readbackTexture(
 
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
 
+	// Access the mapped BGRA pixel buffer.
 	pixels := unsafe.Slice(
-		(*byte)(unsafe.Pointer(mapped.Data)),
+		(*byte)(mapped.Data),
 		rowPitch*height,
 	)
 
@@ -122,6 +131,7 @@ func readbackTexture(
 		for x := 0; x < width; x++ {
 			offset := x * 4
 
+			// BGRA -> RGBA
 			dstRow[offset] = srcRow[offset+2]
 			dstRow[offset+1] = srcRow[offset+1]
 			dstRow[offset+2] = srcRow[offset]

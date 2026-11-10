@@ -23,9 +23,9 @@ var iidIDXGIOutput1 = windows.GUID{
 type Session struct {
 	mu sync.Mutex
 
-	device      uintptr
-	context     uintptr
-	duplication uintptr
+	device      unsafe.Pointer
+	context     unsafe.Pointer
+	duplication unsafe.Pointer
 
 	lastFrame *image.RGBA
 	closed    bool
@@ -36,13 +36,14 @@ func NewSession(display Display) (*Session, error) {
 	session := &Session{}
 	initialized := false
 
+	// Release partially initialized resources on failure.
 	defer func() {
 		if !initialized {
 			session.Close()
 		}
 	}()
 
-	var factory uintptr
+	var factory unsafe.Pointer
 
 	hr, _, _ := createDXGIFactory1.Call(
 		uintptr(unsafe.Pointer(&iidIDXGIFactory1)),
@@ -54,11 +55,12 @@ func NewSession(display Display) (*Session, error) {
 		return nil, err
 	}
 
-	var adapter uintptr
+	// Find the adapter that owns this display.
+	var adapter unsafe.Pointer
 
 	hr, _, _ = syscall.SyscallN(
 		comMethod(factory, 12), // EnumAdapters1
-		factory,
+		uintptr(factory),
 		uintptr(display.AdapterIndex),
 		uintptr(unsafe.Pointer(&adapter)),
 	)
@@ -68,11 +70,12 @@ func NewSession(display Display) (*Session, error) {
 		return nil, err
 	}
 
-	var output uintptr
+	// Find the output on that adapter.
+	var output unsafe.Pointer
 
 	hr, _, _ = syscall.SyscallN(
 		comMethod(adapter, 7), // EnumOutputs
-		adapter,
+		uintptr(adapter),
 		uintptr(display.OutputIndex),
 		uintptr(unsafe.Pointer(&output)),
 	)
@@ -82,11 +85,12 @@ func NewSession(display Display) (*Session, error) {
 		return nil, err
 	}
 
-	var output1 uintptr
+	// Request IDXGIOutput1.
+	var output1 unsafe.Pointer
 
 	hr, _, _ = syscall.SyscallN(
 		comMethod(output, 0), // QueryInterface
-		output,
+		uintptr(output),
 		uintptr(unsafe.Pointer(&iidIDXGIOutput1)),
 		uintptr(unsafe.Pointer(&output1)),
 	)
@@ -98,7 +102,7 @@ func NewSession(display Display) (*Session, error) {
 
 	// Create a D3D11 device on the display's adapter.
 	hr, _, _ = d3d11CreateDevice.Call(
-		adapter,
+		uintptr(adapter),
 		0, // D3D_DRIVER_TYPE_UNKNOWN
 		0,
 		0,
@@ -117,8 +121,8 @@ func NewSession(display Display) (*Session, error) {
 	// Create the desktop duplication interface.
 	hr, _, _ = syscall.SyscallN(
 		comMethod(output1, 22), // DuplicateOutput
-		output1,
-		session.device,
+		uintptr(output1),
+		uintptr(session.device),
 		uintptr(unsafe.Pointer(&session.duplication)),
 	)
 
@@ -147,7 +151,7 @@ func (s *Session) Close() {
 	releaseCOM(s.context)
 	releaseCOM(s.device)
 
-	s.duplication = 0
-	s.context = 0
-	s.device = 0
+	s.duplication = nil
+	s.context = nil
+	s.device = nil
 }

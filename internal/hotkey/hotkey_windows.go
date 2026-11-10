@@ -20,7 +20,9 @@ func Run(onPress func()) error {
 	// Ensure that this thread has a Windows message queue.
 	var msg message
 
-	peekMessageW.Call(
+	// Ensure the current thread has a Windows message queue.
+	// No matching message is a normal result.
+	_, _, _ = peekMessageW.Call(
 		uintptr(unsafe.Pointer(&msg)),
 		0,
 		wmUser,
@@ -39,7 +41,12 @@ func Run(onPress func()) error {
 		return fmt.Errorf("register Ctrl+Shift+F9: %w", err)
 	}
 
-	defer unregisterHotKey.Call(0, hotkeyID)
+	defer func() {
+		result, _, err := unregisterHotKey.Call(0, hotkeyID)
+		if result == 0 {
+			fmt.Fprintf(os.Stderr, "UnregisterHotKey failed: %v\n", err)
+		}
+	}()
 
 	// Ctrl+C must wake the Windows message loop.
 	signals := make(chan os.Signal, 1)

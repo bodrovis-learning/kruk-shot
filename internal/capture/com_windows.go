@@ -6,20 +6,21 @@ import (
 	"unsafe"
 )
 
-func comMethod(object uintptr, index uintptr) uintptr {
-	vtable := *(*uintptr)(unsafe.Pointer(object))
+func comMethod(object unsafe.Pointer, index uintptr) uintptr {
+	vtable := *(*unsafe.Pointer)(object)
 
 	return *(*uintptr)(
-		unsafe.Pointer(vtable + index*unsafe.Sizeof(uintptr(0))),
+		unsafe.Add(vtable, index*unsafe.Sizeof(uintptr(0))),
 	)
 }
 
-func releaseCOM(object uintptr) {
-	if object == 0 {
+func releaseCOM(object unsafe.Pointer) {
+	if object == nil {
 		return
 	}
 
-	syscall.SyscallN(comMethod(object, 2), object)
+	// IUnknown::Release returns a reference count, not HRESULT.
+	_, _, _ = syscall.SyscallN(comMethod(object, 2), uintptr(object))
 }
 
 func checkHRESULT(operation string, hr uintptr) error {

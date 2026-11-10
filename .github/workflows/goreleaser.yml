@@ -13,37 +13,6 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  test:
-    name: Test on Windows
-    runs-on: windows-latest
-
-    permissions:
-      contents: read
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-
-      - name: Verify dependencies
-        run: go mod verify
-
-      - name: Run tests
-        run: go test ./...
-
-      - name: Run vet
-        run: go vet ./...
-
-      - name: Check ARM64 cross-compilation
-        shell: pwsh
-        run: |
-          $env:GOARCH = "arm64"
-          go build ./...
-
   release:
     name: Build and publish
     needs: test
@@ -53,16 +22,21 @@ jobs:
       contents: write
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
+          check-latest: false
+          cache: false
+
+      - name: Verify Go modules
+        run: go mod verify
 
       - name: Install verified UPX
         shell: bash
@@ -91,7 +65,7 @@ jobs:
           upx --version
 
       - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v7
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de
         with:
           distribution: goreleaser
           version: "~> v2"

@@ -52,7 +52,7 @@ var (
 
 // ListDisplays returns all active desktop displays.
 func ListDisplays() ([]Display, error) {
-	var factory uintptr
+	var factory unsafe.Pointer
 
 	hr, _, _ := createDXGIFactory1.Call(
 		uintptr(unsafe.Pointer(&iidIDXGIFactory1)),
@@ -67,11 +67,11 @@ func ListDisplays() ([]Display, error) {
 	var displays []Display
 
 	for i := uint32(0); ; i++ {
-		var adapter uintptr
+		var adapter unsafe.Pointer
 
 		hr, _, _ := syscall.SyscallN(
 			comMethod(factory, 12), // EnumAdapters1
-			factory,
+			uintptr(factory),
 			uintptr(i),
 			uintptr(unsafe.Pointer(&adapter)),
 		)
@@ -101,17 +101,17 @@ func ListDisplays() ([]Display, error) {
 
 // listAdapterOutputs enumerates active outputs on the given adapter.
 func listAdapterOutputs(
-	adapter uintptr,
+	adapter unsafe.Pointer,
 	adapterIndex uint32,
 ) ([]Display, error) {
 	var displays []Display
 
 	for i := uint32(0); ; i++ {
-		var output uintptr
+		var output unsafe.Pointer
 
 		hr, _, _ := syscall.SyscallN(
 			comMethod(adapter, 7), // EnumOutputs
-			adapter,
+			uintptr(adapter),
 			uintptr(i),
 			uintptr(unsafe.Pointer(&output)),
 		)
@@ -130,7 +130,7 @@ func listAdapterOutputs(
 
 		hr, _, _ = syscall.SyscallN(
 			comMethod(output, 7), // GetDesc
-			output,
+			uintptr(output),
 			uintptr(unsafe.Pointer(&desc)),
 		)
 
