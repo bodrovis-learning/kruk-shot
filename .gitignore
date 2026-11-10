@@ -1,0 +1,35 @@
+# Compiled binaries
+*.exe
+*.exe~
+*.test
+
+# Build artifacts
+/dist/
+/bin/
+
+# Screenshots
+/screens/
+
+# Go test and profiling output
+*.out
+*.prof
+*.pprof
+coverage.html
+coverage.txt
+
+# IDEs and editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Environment files
+.env
+.env.*
+!.env.example

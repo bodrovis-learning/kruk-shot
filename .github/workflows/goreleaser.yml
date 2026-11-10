@@ -1,0 +1,100 @@
+
+name: GoReleaser
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions: {}
+
+concurrency:
+  group: goreleaser-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Test on Windows
+    runs-on: windows-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      - name: Run tests
+        run: go test ./...
+
+      - name: Run vet
+        run: go vet ./...
+
+      - name: Check ARM64 cross-compilation
+        shell: pwsh
+        run: |
+          $env:GOARCH = "arm64"
+          go build ./...
+
+  release:
+    name: Build and publish
+    needs: test
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Install verified UPX
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          UPX_VERSION="5.3.0"
+          ARCHIVE="upx-${UPX_VERSION}-amd64_linux.tar.xz"
+          SHA256="79cea8a50b6fa102d10c7b79a419cd77dead3cc2d78661de2dc5e5815dc505c1"
+
+          TMP_DIR="$(mktemp -d)"
+          trap 'rm -rf "$TMP_DIR"' EXIT
+
+          curl --fail --location --silent --show-error \
+            --output "$TMP_DIR/$ARCHIVE" \
+            "https://github.com/upx/upx/releases/download/v${UPX_VERSION}/${ARCHIVE}"
+
+          echo "${SHA256}  ${TMP_DIR}/${ARCHIVE}" | sha256sum --check -
+
+          tar -xJf "$TMP_DIR/$ARCHIVE" -C "$TMP_DIR"
+
+          sudo install -m 0755 \
+            "$TMP_DIR/upx-${UPX_VERSION}-amd64_linux/upx" \
+            /usr/local/bin/upx
+
+          upx --version
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

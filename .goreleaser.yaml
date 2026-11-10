@@ -1,0 +1,58 @@
+
+version: 2
+
+project_name: kruk-shot
+
+builds:
+  - id: kruk-shot
+    main: .
+    binary: kruk-shot
+
+    goos:
+      - windows
+
+    goarch:
+      - amd64
+      - arm64
+
+    env:
+      - CGO_ENABLED=0
+
+    flags:
+      - -trimpath
+
+    ldflags:
+      - -s -w
+      - -X github.com/bodrovis-learning/kruk-shot/internal/buildinfo.Version={{ .Version }}
+
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+upx:
+  - enabled: true
+    ids:
+      - kruk-shot
+    goos:
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    compress: best
+    lzma: true
+    brute: true
+
+archives:
+  - id: windows
+    ids:
+      - kruk-shot
+    formats:
+      - zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+release:
+  draft: false
+
+changelog:
+  sort: asc
