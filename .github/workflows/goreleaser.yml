@@ -15,7 +15,6 @@ concurrency:
 jobs:
   release:
     name: Build and publish
-    needs: test
     runs-on: ubuntu-latest
 
     permissions:
