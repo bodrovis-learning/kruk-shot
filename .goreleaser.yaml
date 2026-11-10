@@ -53,6 +53,9 @@ checksum:
 
 release:
   draft: false
+  prerelease: auto
+  preflight:
+    fail_on_error: true
 
 changelog:
   sort: asc
