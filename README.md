@@ -2,6 +2,8 @@
 
 Kruk Shot is a lightweight, portable screenshot utility for Windows, written in Go. It uses DXGI Desktop Duplication and Direct3D 11 to capture screenshots of the desktop and games, including exclusive fullscreen applications.
 
+> If you're looking for a cross-platform app, check out [kruk_screenshots](https://github.com/bodrovis-learning/kruk_screenshots).
+
 ## Features
 
 - Global screenshot hotkey: **Ctrl+Shift+F9**.

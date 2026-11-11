@@ -1,0 +1,26 @@
+
+version: 2
+
+updates:
+  # Go modules (go.mod and go.sum).
+  - package-ecosystem: gomod
+    directory: /
+    open-pull-requests-limit: 10
+    cooldown:
+      default-days: 7
+    schedule:
+      interval: monthly
+    labels:
+      - dependencies
+
+  # GitHub Actions workflow dependencies.
+  - package-ecosystem: github-actions
+    directory: /
+    open-pull-requests-limit: 10
+    cooldown:
+      default-days: 7
+    schedule:
+      interval: monthly
+    labels:
+      - dependencies
+      - github-actions
