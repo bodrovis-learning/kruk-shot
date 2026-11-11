@@ -22,45 +22,55 @@ func (m *monitorManager) refresh() error {
 		return fmt.Errorf("list displays: %w", err)
 	}
 
-	previous := m.monitors
-	reused := make([]bool, len(previous))
-	next := make([]monitor, len(displays))
+	previous := m.existingSessions()
+	next := make([]monitor, 0, len(displays))
 
-	// Reuse sessions whose display configuration is unchanged.
-	for i, display := range displays {
-		next[i].display = display
+	for _, display := range displays {
+		next = append(next, monitor{
+			display: display,
+			session: previous[display],
+		})
 
-		for j := range previous {
-			if reused[j] || previous[j].display != display {
-				continue
-			}
-
-			reused[j] = true
-			next[i].session = previous[j].session
-			break
-		}
+		delete(previous, display)
 	}
 
-	// Release sessions for disconnected or reconfigured displays.
-	// Do this before creating new duplication interfaces.
-	for i := range previous {
-		if reused[i] {
-			continue
-		}
+	// Release removed or reconfigured displays before
+	// creating new duplication interfaces.
+	closeRemoved(previous)
 
-		if previous[i].session != nil {
-			previous[i].session.Close()
+	m.monitors = next
+	m.initializeMissing()
+
+	return nil
+}
+
+// existingSessions indexes the current sessions by display configuration.
+func (m *monitorManager) existingSessions() map[capture.Display]*capture.Session {
+	sessions := make(map[capture.Display]*capture.Session, len(m.monitors))
+
+	for _, mon := range m.monitors {
+		sessions[mon.display] = mon.session
+	}
+
+	return sessions
+}
+
+// closeRemoved releases sessions that are no longer reusable.
+func closeRemoved(sessions map[capture.Display]*capture.Session) {
+	for display, session := range sessions {
+		if session != nil {
+			session.Close()
 		}
 
 		fmt.Printf(
 			"Display removed or reconfigured: %s\n",
-			previous[i].display.Name,
+			display.Name,
 		)
 	}
+}
 
-	m.monitors = next
-
-	// Initialize new displays and retry previously unavailable ones.
+// initializeMissing creates sessions for new or unavailable displays.
+func (m *monitorManager) initializeMissing() {
 	for i := range m.monitors {
 		mon := &m.monitors[i]
 
@@ -68,17 +78,10 @@ func (m *monitorManager) refresh() error {
 			continue
 		}
 
-		session, err := capture.NewSession(mon.display)
-		if err != nil {
-			fmt.Printf(
-				"Display unavailable: %s: %v\n",
-				mon.display.Name,
-				err,
-			)
+		if err := mon.ensureSession(); err != nil {
+			fmt.Printf("Display unavailable: %v\n", err)
 			continue
 		}
-
-		mon.session = session
 
 		fmt.Printf(
 			"Ready: %s (%dx%d at %d,%d)\n",
@@ -89,8 +92,6 @@ func (m *monitorManager) refresh() error {
 			mon.display.Y,
 		)
 	}
-
-	return nil
 }
 
 // close releases all active capture sessions.

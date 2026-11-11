@@ -9,11 +9,13 @@ import (
 	"time"
 )
 
+// PNGWriter saves a batch of screenshots with a shared timestamp.
 type PNGWriter struct {
 	dir       string
 	timestamp string
 }
 
+// NewPNGWriter creates a writer for the screens directory next to the executable.
 func NewPNGWriter() (*PNGWriter, error) {
 	exePath, err := os.Executable()
 	if err != nil {
@@ -32,6 +34,7 @@ func NewPNGWriter() (*PNGWriter, error) {
 	}, nil
 }
 
+// Save writes a screenshot without overwriting an existing file.
 func (w *PNGWriter) Save(displayIndex int, img image.Image) (string, error) {
 	filename := fmt.Sprintf(
 		"kruk-%s-display-%d.png",

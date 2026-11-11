@@ -7,33 +7,8 @@ import (
 	"unsafe"
 )
 
-const (
-	d3d11UsageStaging  = 3
-	d3d11CPUAccessRead = 0x20000
-	d3d11MapRead       = 1
-	dxgiFormatBGRA8    = 87
-)
-
-type mappedSubresource struct {
-	Data       unsafe.Pointer
-	RowPitch   uint32
-	DepthPitch uint32
-}
-
-type texture2DDesc struct {
-	Width          uint32
-	Height         uint32
-	MipLevels      uint32
-	ArraySize      uint32
-	Format         uint32
-	SampleCount    uint32
-	SampleQuality  uint32
-	Usage          uint32
-	BindFlags      uint32
-	CPUAccessFlags uint32
-	MiscFlags      uint32
-}
-
+// readbackTexture copies a GPU texture into CPU-accessible memory
+// and converts its BGRA pixels into a Go RGBA image.
 func readbackTexture(
 	device unsafe.Pointer,
 	context unsafe.Pointer,
@@ -44,7 +19,8 @@ func readbackTexture(
 		return nil, fmt.Errorf("unsupported texture format: %d", desc.Format)
 	}
 
-	// Create a CPU-readable staging texture.
+	// Staging resources support GPU copy operations and CPU access.
+	// They cannot be bound to the rendering pipeline.
 	stagingDesc := desc
 	stagingDesc.Usage = d3d11UsageStaging
 	stagingDesc.BindFlags = 0
@@ -53,11 +29,12 @@ func readbackTexture(
 
 	var staging unsafe.Pointer
 
+	// ID3D11Device::CreateTexture2D.
 	hr, _, _ := syscall.SyscallN(
-		comMethod(device, 5), // CreateTexture2D
+		comMethod(device, d3d11DeviceCreateTexture2D),
 		uintptr(device),
 		uintptr(unsafe.Pointer(&stagingDesc)),
-		0,
+		0, // No initial texture data.
 		uintptr(unsafe.Pointer(&staging)),
 	)
 	defer releaseCOM(staging)
@@ -70,9 +47,10 @@ func readbackTexture(
 		return nil, fmt.Errorf("CreateTexture2D returned a null texture")
 	}
 
-	// Copy the GPU texture into the staging texture.
+	// ID3D11DeviceContext::CopyResource returns void.
+	// The GPU copies the source texture into our staging texture.
 	_, _, _ = syscall.SyscallN(
-		comMethod(context, 47), // CopyResource
+		comMethod(context, d3d11ContextCopyResource),
 		uintptr(context),
 		uintptr(staging),
 		uintptr(source),
@@ -80,13 +58,16 @@ func readbackTexture(
 
 	var mapped mappedSubresource
 
+	// ID3D11DeviceContext::Map returns HRESULT.
+	// Subresource 0 is the first (and only) texture subresource.
+	// MapFlags 0 allows waiting until the GPU finishes copying.
 	hr, _, _ = syscall.SyscallN(
-		comMethod(context, 14), // Map
+		comMethod(context, d3d11ContextMap),
 		uintptr(context),
 		uintptr(staging),
-		0,
+		0, // Subresource index.
 		d3d11MapRead,
-		0,
+		0, // Map flags.
 		uintptr(unsafe.Pointer(&mapped)),
 	)
 
@@ -94,10 +75,11 @@ func readbackTexture(
 		return nil, err
 	}
 
+	// Unmap must happen before the staging texture is released.
 	defer func() {
 		// ID3D11DeviceContext::Unmap returns void.
 		_, _, _ = syscall.SyscallN(
-			comMethod(context, 15),
+			comMethod(context, d3d11ContextUnmap),
 			uintptr(context),
 			uintptr(staging),
 			0,
@@ -112,32 +94,25 @@ func readbackTexture(
 	height := int(desc.Height)
 	rowPitch := int(mapped.RowPitch)
 
-	if width <= 0 || height <= 0 || rowPitch < width*4 {
+	if width <= 0 || height <= 0 || rowPitch < width*bytesPerPixel {
 		return nil, fmt.Errorf("invalid texture dimensions or row pitch")
 	}
 
-	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	// Include only the bytes needed through the last visible row.
+	// This also avoids assuming that the last row's padding is readable.
+	bufferSize := uint64(mapped.RowPitch)*uint64(desc.Height-1) +
+		uint64(desc.Width)*bytesPerPixel
 
-	// Access the mapped BGRA pixel buffer.
-	pixels := unsafe.Slice(
-		(*byte)(mapped.Data),
-		rowPitch*height,
-	)
-
-	for y := 0; y < height; y++ {
-		srcRow := pixels[y*rowPitch : y*rowPitch+width*4]
-		dstRow := img.Pix[y*img.Stride : y*img.Stride+width*4]
-
-		for x := 0; x < width; x++ {
-			offset := x * 4
-
-			// BGRA -> RGBA
-			dstRow[offset] = srcRow[offset+2]
-			dstRow[offset+1] = srcRow[offset+1]
-			dstRow[offset+2] = srcRow[offset]
-			dstRow[offset+3] = 255
-		}
+	if bufferSize > uint64(int(^uint(0)>>1)) {
+		return nil, fmt.Errorf("mapped texture buffer is too large")
 	}
 
-	return img, nil
+	// Data points to native memory owned by D3D11.
+	// We must copy its contents before Unmap.
+	pixels := unsafe.Slice(
+		(*byte)(mapped.Data),
+		int(bufferSize),
+	)
+
+	return bgraToRGBA(pixels, width, height, rowPitch), nil
 }

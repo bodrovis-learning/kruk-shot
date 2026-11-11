@@ -8,33 +8,54 @@ import (
 	"github.com/bodrovis-learning/kruk-shot/internal/capture"
 )
 
-// captureWithRecovery captures an image and recreates the session
-// if desktop duplication was invalidated by a display mode change.
-func captureWithRecovery(
-	display capture.Display,
-	session **capture.Session,
-) (*image.RGBA, error) {
-	for attempt := 0; attempt < 2; attempt++ {
-		if *session == nil {
-			newSession, err := capture.NewSession(display)
-			if err != nil {
-				return nil, fmt.Errorf("recreate capture session: %w", err)
-			}
+const maxCaptureAttempts = 2
 
-			*session = newSession
+// capture captures a display image, recreating its session if necessary.
+func (m *monitor) capture() (*image.RGBA, error) {
+	for attempt := 0; attempt < maxCaptureAttempts; attempt++ {
+		if err := m.ensureSession(); err != nil {
+			return nil, err
 		}
 
-		img, err := (*session).Capture()
-
+		img, err := m.session.Capture()
 		if !errors.Is(err, capture.ErrSessionLost) {
 			return img, err
 		}
 
-		fmt.Printf("DXGI session lost for %s, recreating...\n", display.Name)
+		m.session.Close()
+		m.session = nil
 
-		(*session).Close()
-		*session = nil
+		if attempt+1 < maxCaptureAttempts {
+			fmt.Printf(
+				"DXGI session lost for %s, recreating...\n",
+				m.display.Name,
+			)
+		}
 	}
 
-	return nil, fmt.Errorf("capture session lost again after recovery")
+	return nil, fmt.Errorf(
+		"DXGI session lost for %s after %d attempts: %w",
+		m.display.Name,
+		maxCaptureAttempts,
+		capture.ErrSessionLost,
+	)
+}
+
+// ensureSession creates a capture session if one does not exist.
+func (m *monitor) ensureSession() error {
+	if m.session != nil {
+		return nil
+	}
+
+	session, err := capture.NewSession(m.display)
+	if err != nil {
+		return fmt.Errorf(
+			"initialize capture session for %s: %w",
+			m.display.Name,
+			err,
+		)
+	}
+
+	m.session = session
+	return nil
 }

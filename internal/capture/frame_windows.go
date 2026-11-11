@@ -5,48 +5,17 @@ import (
 	"image"
 	"syscall"
 	"unsafe"
-
-	"golang.org/x/sys/windows"
 )
 
-const (
-	dxgiErrorWaitTimeout = 0x887A0027
-	dxgiErrorAccessLost  = 0x887A0026
-
-	initialFrameAttempts = 20
-	cachedFrameChecks    = 3
-)
-
+// ErrSessionLost indicates that desktop duplication must be recreated.
+// This can happen when Windows changes the display mode.
 var ErrSessionLost = errors.New("desktop duplication session lost")
 
-var iidID3D11Texture2D = windows.GUID{
-	Data1: 0x6f15aaf2,
-	Data2: 0xd208,
-	Data3: 0x4e89,
-	Data4: [8]byte{
-		0x9a, 0xb4, 0x48, 0x95,
-		0x35, 0xd3, 0x4f, 0x9c,
-	},
-}
-
-type pointerPosition struct {
-	X       int32
-	Y       int32
-	Visible int32
-}
-
-type frameInfo struct {
-	LastPresentTime           int64
-	LastMouseUpdateTime       int64
-	AccumulatedFrames         uint32
-	RectsCoalesced            int32
-	ProtectedContentMaskedOut int32
-	PointerPosition           pointerPosition
-	TotalMetadataBufferSize   uint32
-	PointerShapeBufferSize    uint32
-}
-
 // Capture returns a new desktop image or the most recently cached image.
+//
+// The first capture waits for a desktop image update. Later captures
+// use a non-blocking check and fall back to the cached image.
+//
 // The returned image must be treated as read-only.
 func (s *Session) Capture() (*image.RGBA, error) {
 	s.mu.Lock()
@@ -57,7 +26,7 @@ func (s *Session) Capture() (*image.RGBA, error) {
 	}
 
 	attempts := initialFrameAttempts
-	timeoutMS := uintptr(500)
+	timeoutMS := uintptr(initialFrameTimeoutMS)
 
 	if s.lastFrame != nil {
 		attempts = cachedFrameChecks
@@ -65,78 +34,29 @@ func (s *Session) Capture() (*image.RGBA, error) {
 	}
 
 	for attempt := 0; attempt < attempts; attempt++ {
-		var info frameInfo
-		var resource unsafe.Pointer
-
-		hr, _, _ := syscall.SyscallN(
-			comMethod(s.duplication, 8), // AcquireNextFrame
-			uintptr(s.duplication),
-			timeoutMS,
-			uintptr(unsafe.Pointer(&info)),
-			uintptr(unsafe.Pointer(&resource)),
-		)
-
-		switch uint32(hr) {
-		case dxgiErrorWaitTimeout:
-			if s.lastFrame != nil {
-				return s.lastFrame, nil
+		img, received, err := s.acquireFrame(timeoutMS)
+		if err != nil {
+			// An invalid duplication session must never retain
+			// a cached image from the previous display mode.
+			if errors.Is(err, ErrSessionLost) {
+				s.lastFrame = nil
 			}
-			continue
 
-		case dxgiErrorAccessLost:
-			// Never reuse a frame from an invalid duplication session.
-			s.lastFrame = nil
-			releaseCOM(resource)
-			return nil, ErrSessionLost
-		}
-
-		if err := checkHRESULT("AcquireNextFrame", hr); err != nil {
-			releaseCOM(resource)
 			return nil, err
-		}
-
-		var img *image.RGBA
-		var captureErr error
-
-		// A zero timestamp means that only the mouse pointer changed.
-		if info.LastPresentTime != 0 {
-			if resource == nil {
-				captureErr = errors.New("desktop frame has no resource")
-			} else {
-				img, captureErr = s.readFrame(resource)
-			}
-		}
-
-		releaseCOM(resource)
-
-		// Every successful AcquireNextFrame needs a ReleaseFrame.
-		hr, _, _ = syscall.SyscallN(
-			comMethod(s.duplication, 14), // ReleaseFrame
-			uintptr(s.duplication),
-		)
-
-		if uint32(hr) == dxgiErrorAccessLost {
-			s.lastFrame = nil
-			return nil, ErrSessionLost
-		}
-
-		if err := checkHRESULT("ReleaseFrame", hr); err != nil {
-			return nil, err
-		}
-
-		if captureErr != nil {
-			return nil, captureErr
 		}
 
 		if img != nil {
-			// Replace the cache only after a successful readback
-			// and ReleaseFrame.
 			s.lastFrame = img
 			return img, nil
 		}
 
-		// Cursor-only event. Try another pending frame rather
-		// than immediately returning the previous screenshot.
+		// No new frame was available. Return the cached image.
+		if !received && s.lastFrame != nil {
+			return s.lastFrame, nil
+		}
+
+		// A cursor-only event occurred, or the initial capture
+		// timed out. Try again within the configured limit.
 	}
 
 	if s.lastFrame != nil {
@@ -146,33 +66,75 @@ func (s *Session) Capture() (*image.RGBA, error) {
 	return nil, errors.New("no desktop image update received")
 }
 
-// readFrame converts an acquired DXGI resource into an RGBA image.
-func (s *Session) readFrame(resource unsafe.Pointer) (*image.RGBA, error) {
-	var texture unsafe.Pointer
+// acquireFrame attempts to acquire and read one DXGI frame.
+//
+// The returned bool indicates whether AcquireNextFrame succeeded.
+// A successful acquisition can still be cursor-only and return nil.
+//
+// Every successful acquisition must be followed by ReleaseFrame.
+func (s *Session) acquireFrame(
+	timeoutMS uintptr,
+) (*image.RGBA, bool, error) {
+	var info frameInfo
+	var resource unsafe.Pointer
 
 	hr, _, _ := syscall.SyscallN(
-		comMethod(resource, 0), // QueryInterface
-		uintptr(resource),
-		uintptr(unsafe.Pointer(&iidID3D11Texture2D)),
-		uintptr(unsafe.Pointer(&texture)),
-	)
-	defer releaseCOM(texture)
-
-	if err := checkHRESULT("QueryInterface ID3D11Texture2D", hr); err != nil {
-		return nil, err
-	}
-
-	if texture == nil {
-		return nil, errors.New("QueryInterface returned a null texture")
-	}
-
-	var desc texture2DDesc
-
-	_, _, _ = syscall.SyscallN(
-		comMethod(texture, 10), // GetDesc
-		uintptr(texture),
-		uintptr(unsafe.Pointer(&desc)),
+		comMethod(s.duplication, dxgiDuplicationAcquireNextFrame),
+		uintptr(s.duplication),
+		timeoutMS,
+		uintptr(unsafe.Pointer(&info)),
+		uintptr(unsafe.Pointer(&resource)),
 	)
 
-	return readbackTexture(s.device, s.context, texture, desc)
+	switch uint32(hr) {
+	case dxgiErrorWaitTimeout:
+		releaseCOM(resource)
+		return nil, false, nil
+
+	case dxgiErrorAccessLost:
+		releaseCOM(resource)
+		return nil, false, ErrSessionLost
+	}
+
+	if err := checkHRESULT("AcquireNextFrame", hr); err != nil {
+		releaseCOM(resource)
+		return nil, false, err
+	}
+
+	var img *image.RGBA
+	var readErr error
+
+	// LastPresentTime is zero if only the pointer changed.
+	// We must not replace the cached desktop image with it.
+	if info.LastPresentTime != 0 {
+		if resource == nil {
+			readErr = errors.New("desktop frame has no resource")
+		} else {
+			img, readErr = s.readFrame(resource)
+		}
+	}
+
+	// The acquired resource is no longer needed.
+	releaseCOM(resource)
+
+	// ReleaseFrame is required after every successful acquisition,
+	// including cursor-only updates and failed readbacks.
+	hr, _, _ = syscall.SyscallN(
+		comMethod(s.duplication, dxgiDuplicationReleaseFrame),
+		uintptr(s.duplication),
+	)
+
+	if uint32(hr) == dxgiErrorAccessLost {
+		return nil, true, ErrSessionLost
+	}
+
+	if err := checkHRESULT("ReleaseFrame", hr); err != nil {
+		return nil, true, err
+	}
+
+	if readErr != nil {
+		return nil, true, readErr
+	}
+
+	return img, true, nil
 }

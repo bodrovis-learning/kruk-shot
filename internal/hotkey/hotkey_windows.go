@@ -3,35 +3,37 @@ package hotkey
 import (
 	"fmt"
 	"os"
-	"os/signal"
 	"runtime"
-	"unsafe"
 )
 
 // Run registers Ctrl+Shift+F9 and processes hotkey events.
 // It blocks until Ctrl+C is received.
 func Run(onPress func()) error {
-	// Windows hotkeys belong to a specific OS thread.
+	// RegisterHotKey is bound to the calling Windows thread.
+	// All related operations must run on that same thread.
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
+	ensureMessageQueue()
+
+	if err := registerScreenshotHotkey(); err != nil {
+		return err
+	}
+	defer unregisterScreenshotHotkey()
+
 	threadID, _, _ := getCurrentThreadID.Call()
 
-	// Ensure that this thread has a Windows message queue.
-	var msg message
+	// Ctrl+C interrupts the blocking GetMessageW call.
+	stopInterrupt := watchInterrupt(threadID)
+	defer stopInterrupt()
 
-	// Ensure the current thread has a Windows message queue.
-	// No matching message is a normal result.
-	_, _, _ = peekMessageW.Call(
-		uintptr(unsafe.Pointer(&msg)),
-		0,
-		wmUser,
-		wmUser,
-		0, // PM_NOREMOVE
-	)
+	return runMessageLoop(onPress)
+}
 
+// registerScreenshotHotkey registers a thread-level global hotkey.
+func registerScreenshotHotkey() error {
 	result, _, err := registerHotKey.Call(
-		0, // No window; use the current thread.
+		0, // NULL HWND: associate the hotkey with this thread.
 		hotkeyID,
 		modControl|modShift|modNoRepeat,
 		vkF9,
@@ -41,61 +43,13 @@ func Run(onPress func()) error {
 		return fmt.Errorf("register Ctrl+Shift+F9: %w", err)
 	}
 
-	defer func() {
-		result, _, err := unregisterHotKey.Call(0, hotkeyID)
-		if result == 0 {
-			fmt.Fprintf(os.Stderr, "UnregisterHotKey failed: %v\n", err)
-		}
-	}()
+	return nil
+}
 
-	// Ctrl+C must wake the Windows message loop.
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, os.Interrupt)
-	defer signal.Stop(signals)
-
-	done := make(chan struct{})
-	defer close(done)
-
-	go func() {
-		select {
-		case <-signals:
-			result, _, err := postThreadMessageW.Call(
-				threadID,
-				wmQuit,
-				0,
-				0,
-			)
-
-			if result == 0 {
-				fmt.Fprintf(os.Stderr, "PostThreadMessageW: %v\n", err)
-			}
-
-		case <-done:
-			return
-		}
-	}()
-
-	for {
-		var msg message
-
-		result, _, err := getMessageW.Call(
-			uintptr(unsafe.Pointer(&msg)),
-			0,
-			0,
-			0,
-		)
-
-		switch int32(result) {
-		case -1:
-			return fmt.Errorf("GetMessageW: %w", err)
-
-		case 0:
-			// WM_QUIT
-			return nil
-		}
-
-		if msg.Message == wmHotkey && msg.WParam == hotkeyID {
-			onPress()
-		}
+// unregisterScreenshotHotkey removes the hotkey registration.
+func unregisterScreenshotHotkey() {
+	result, _, err := unregisterHotKey.Call(0, hotkeyID)
+	if result == 0 {
+		fmt.Fprintf(os.Stderr, "UnregisterHotKey failed: %v\n", err)
 	}
 }

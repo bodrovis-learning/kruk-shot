@@ -1,0 +1,15 @@
+{
+  "RT_GROUP_ICON": {
+    "APP": {
+      "0000": "icon.png"
+    }
+  },
+  "RT_MANIFEST": {
+    "#1": {
+      "0409": {
+        "minimum-os": "win10",
+        "dpi-awareness": "per monitor v2"
+      }
+    }
+  }
+}

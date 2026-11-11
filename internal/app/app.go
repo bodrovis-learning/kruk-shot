@@ -4,15 +4,10 @@ import (
 	"fmt"
 
 	"github.com/bodrovis-learning/kruk-shot/internal/buildinfo"
-	"github.com/bodrovis-learning/kruk-shot/internal/capture"
 	"github.com/bodrovis-learning/kruk-shot/internal/hotkey"
 )
 
 func Run() error {
-	if err := capture.EnableDPIAwareness(); err != nil {
-		return err
-	}
-
 	manager := &monitorManager{}
 	defer manager.close()
 

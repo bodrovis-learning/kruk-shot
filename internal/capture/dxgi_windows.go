@@ -1,14 +1,16 @@
 package capture
 
 import (
+	"errors"
+	"fmt"
 	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
-const dxgiErrorNotFound = 0x887A0002
-
+// Display describes an active desktop output and its position
+// within the Windows virtual desktop.
 type Display struct {
 	AdapterIndex uint32
 	OutputIndex  uint32
@@ -20,6 +22,7 @@ type Display struct {
 	Rotation     uint32
 }
 
+// rect mirrors the Win32 RECT structure.
 type rect struct {
 	Left   int32
 	Top    int32
@@ -27,6 +30,11 @@ type rect struct {
 	Bottom int32
 }
 
+// outputDesc mirrors DXGI_OUTPUT_DESC from dxgi.h.
+//
+// AttachedToDesktop is a Win32 BOOL (32-bit integer).
+// Rotation is a DXGI_MODE_ROTATION enum.
+// Monitor is an opaque HMONITOR handle.
 type outputDesc struct {
 	DeviceName         [32]uint16
 	DesktopCoordinates rect
@@ -35,62 +43,40 @@ type outputDesc struct {
 	Monitor            uintptr
 }
 
-var (
-	createDXGIFactory1 = windows.NewLazySystemDLL("dxgi.dll").
-				NewProc("CreateDXGIFactory1")
-
-	iidIDXGIFactory1 = windows.GUID{
-		Data1: 0x770aae78,
-		Data2: 0xf26f,
-		Data3: 0x4dba,
-		Data4: [8]byte{
-			0xa8, 0x29, 0x25, 0x3c,
-			0x83, 0xd1, 0xb3, 0x87,
-		},
-	}
-)
-
-// ListDisplays returns all active desktop displays.
+// ListDisplays returns all outputs attached to the Windows desktop.
+// Displays are enumerated by adapter and then by output index.
 func ListDisplays() ([]Display, error) {
-	var factory unsafe.Pointer
-
-	hr, _, _ := createDXGIFactory1.Call(
-		uintptr(unsafe.Pointer(&iidIDXGIFactory1)),
-		uintptr(unsafe.Pointer(&factory)),
-	)
-	defer releaseCOM(factory)
-
-	if err := checkHRESULT("CreateDXGIFactory1", hr); err != nil {
+	factory, err := newDXGIFactory()
+	if err != nil {
 		return nil, err
 	}
+	defer releaseCOM(factory)
 
 	var displays []Display
 
-	for i := uint32(0); ; i++ {
-		var adapter unsafe.Pointer
+	for adapterIndex := uint32(0); ; adapterIndex++ {
+		adapter, err := newDXGIAdapter(factory, adapterIndex)
 
-		hr, _, _ := syscall.SyscallN(
-			comMethod(factory, 12), // EnumAdapters1
-			uintptr(factory),
-			uintptr(i),
-			uintptr(unsafe.Pointer(&adapter)),
-		)
-
-		if uint32(hr) == dxgiErrorNotFound {
-			releaseCOM(adapter)
+		if errors.Is(err, errDXGINotFound) {
 			break
 		}
-
-		if err := checkHRESULT("EnumAdapters1", hr); err != nil {
-			releaseCOM(adapter)
-			return nil, err
+		if err != nil {
+			return nil, fmt.Errorf(
+				"enumerate adapter %d: %w",
+				adapterIndex,
+				err,
+			)
 		}
 
-		outputs, err := listAdapterOutputs(adapter, i)
+		outputs, err := listAdapterOutputs(adapter, adapterIndex)
 		releaseCOM(adapter)
 
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf(
+				"list outputs for adapter %d: %w",
+				adapterIndex,
+				err,
+			)
 		}
 
 		displays = append(displays, outputs...)
@@ -99,47 +85,39 @@ func ListDisplays() ([]Display, error) {
 	return displays, nil
 }
 
-// listAdapterOutputs enumerates active outputs on the given adapter.
+// listAdapterOutputs enumerates active desktop outputs on an adapter.
 func listAdapterOutputs(
 	adapter unsafe.Pointer,
 	adapterIndex uint32,
 ) ([]Display, error) {
 	var displays []Display
 
-	for i := uint32(0); ; i++ {
-		var output unsafe.Pointer
+	for outputIndex := uint32(0); ; outputIndex++ {
+		output, err := newDXGIOutput(adapter, outputIndex)
 
-		hr, _, _ := syscall.SyscallN(
-			comMethod(adapter, 7), // EnumOutputs
-			uintptr(adapter),
-			uintptr(i),
-			uintptr(unsafe.Pointer(&output)),
-		)
-
-		if uint32(hr) == dxgiErrorNotFound {
-			releaseCOM(output)
+		if errors.Is(err, errDXGINotFound) {
 			break
 		}
-
-		if err := checkHRESULT("EnumOutputs", hr); err != nil {
-			releaseCOM(output)
-			return nil, err
+		if err != nil {
+			return nil, fmt.Errorf(
+				"enumerate output %d: %w",
+				outputIndex,
+				err,
+			)
 		}
 
-		var desc outputDesc
-
-		hr, _, _ = syscall.SyscallN(
-			comMethod(output, 7), // GetDesc
-			uintptr(output),
-			uintptr(unsafe.Pointer(&desc)),
-		)
-
+		desc, err := getOutputDesc(output)
 		releaseCOM(output)
 
-		if err := checkHRESULT("GetDesc", hr); err != nil {
-			return nil, err
+		if err != nil {
+			return nil, fmt.Errorf(
+				"describe output %d: %w",
+				outputIndex,
+				err,
+			)
 		}
 
+		// Ignore outputs that are not attached to the desktop.
 		if desc.AttachedToDesktop == 0 {
 			continue
 		}
@@ -148,7 +126,7 @@ func listAdapterOutputs(
 
 		displays = append(displays, Display{
 			AdapterIndex: adapterIndex,
-			OutputIndex:  i,
+			OutputIndex:  outputIndex,
 			Name:         windows.UTF16ToString(desc.DeviceName[:]),
 			X:            bounds.Left,
 			Y:            bounds.Top,
@@ -159,4 +137,21 @@ func listAdapterOutputs(
 	}
 
 	return displays, nil
+}
+
+// getOutputDesc retrieves the native DXGI description of an output.
+func getOutputDesc(output unsafe.Pointer) (outputDesc, error) {
+	var desc outputDesc
+
+	hr, _, _ := syscall.SyscallN(
+		comMethod(output, dxgiOutputGetDesc),
+		uintptr(output),
+		uintptr(unsafe.Pointer(&desc)),
+	)
+
+	if err := checkHRESULT("IDXGIOutput::GetDesc", hr); err != nil {
+		return outputDesc{}, err
+	}
+
+	return desc, nil
 }
